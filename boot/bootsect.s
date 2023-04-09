@@ -2,7 +2,10 @@
 ! SYS_SIZE is the number of clicks (16 bytes) to be loaded.
 ! 0x3000 is 0x30000 bytes = 196kB, more than enough for current
 ! versions of linux
+!SYS SIZE是要加载的节数(16字节为1节)。0x3000共为
+!0x30000字节=196kB(若以1024字节为1B计，则应该是192KB),对于当前的版本空间已足多了
 !
+!指编译连接后system模块的大小。这里给出了一个最大默认值
 SYSSIZE = 0x3000
 !
 !	bootsect.s		(C) 1991 Linus Torvalds
@@ -21,50 +24,98 @@ SYSSIZE = 0x3000
 ! The loader has been made as simple as possible, and continuos
 ! read errors will result in a unbreakable loop. Reboot by hand. It
 ! loads pretty fast by getting whole sectors at a time whenever possible.
-
-.globl begtext, begdata, begbss, endtext, enddata, endbss
-.text
-begtext:
-.data
+!以下是前面这些文字的翻译：
+!	bootsect.s		(C)1991 Linus Torvalds版权所有
+!
+!bootsect.s被bios-启动子程序加载至0x7c00(31k)处，并将自己
+!移到了地址0x90000(576k)处，并跳转至那里。
+!
+!它然后使用BI0S中断将'setup'直接加载到自己的后面(0x90200)(576.5k),
+!并将system加载到地址0x10000处。
+!
+!注意！日前的内核系统最大长度限制为(8*65536)(512k)字节，即使是在
+!将来这也应该没有问题的。我想让它保持简单明了。这样512k的最大内核长度应该
+!足够了，尤其是这里没有象minix中一样包含缓冲区高速缓冲。
+! 
+ 
+!加载程序已经做的够简单了，所以持续的读出错将导致死循环。只能手工重启。
+!只要可能，通过一次读取所有的扇区，加载过程可以做的很快。
+.globl begtext, begdata, begbss, endtext, enddata, endbss	!定义了6个全局标识符：
+.text	!文本段
+begtext:	
+.data	!数据段
 begdata:
-.bss
+.bss	!未初始化数据段(Block Started by Symbol)
 begbss:
-.text
+.text	!文本段
 
-SETUPLEN = 4				! nr of setup-sectors
-BOOTSEG  = 0x07c0			! original address of boot-sector
-INITSEG  = 0x9000			! we move boot here - out of the way
-SETUPSEG = 0x9020			! setup starts here
-SYSSEG   = 0x1000			! system loaded at 0x10000 (65536).
-ENDSEG   = SYSSEG + SYSSIZE		! where to stop loading
+SETUPLEN = 4				! nr of setup-sectors setup程序的删除数(setup-sectors)值
+BOOTSEG  = 0x07c0			! original address of boot-sector bootsect的原始地址(段地址)
+INITSEG  = 0x9000			! we move boot here - out of the way 将bootsect移到这里
+SETUPSEG = 0x9020			! setup starts here setup程序从这里开始
+SYSSEG   = 0x1000			! system loaded at 0x10000 (65536). system模块加载到0x10000(64kb)处
+ENDSEG   = SYSSEG + SYSSIZE		! where to stop loading 停止加载的段地址
 
 ! ROOT_DEV:	0x000 - same type of floppy as boot.
+!					根文件系统设备使用与引导时同样的软驱设备
 !		0x301 - first partition on first drive etc
+!				根文件系统设备在第一硬盘的第一个分区上,等等
+
+!指定根文件系统设备是第2个硬盘的第1个分区。这是Liux老式的硬盘命名
+!方式，具体值的含义如下：
+!设备号=主设备号*256+次设备号（他即devn0=(major<<8)+minor)
+!(主设备号：1-内存，2-磁盘，3-硬盘，4-ttyx,5-tty,6-并行口，7-非命名管道)
+!0x300-/dev/hd0-代表整个第1个硬盘：
+!0x301-/dev/hd1-第1个盘的第1个分区：
+!...
+!0x304-/dev/hd4-第1个盘的第4个分区：
+!0x305-/dev/hd5-代表整个第2个硬盘：
+!0x306-/dev/hd6-第2个盘的第1个分区：
+!...
+!0x309-/dev/hd9-第2个盘的第4个分区；
+!从1iux内核0.95版后已经使用与现在相同的命名方法了。
 ROOT_DEV = 0x306
 
-entry _start
-_start:
+entry _start		! 告知链接程序,程序从start标号开始执行
+_start:				!83--92行作用是将自身(bootsect)从目前段位置0x07c0(31k)
+					!移动到0x9000(576k)处，共256字(512字节)，然后跳转到
+					!移动后代码的g0标号处，也即本程序的下一语句处。
 	mov	ax,#BOOTSEG
-	mov	ds,ax
+	mov	ds,ax		!将ds设置为0x7c0
 	mov	ax,#INITSEG
-	mov	es,ax
-	mov	cx,#256
-	sub	si,si
-	sub	di,di
-	rep
-	movw
-	jmpi	go,INITSEG
-go:	mov	ax,cs
-	mov	ds,ax
+	mov	es,ax		!将es设置为0x9000
+	mov	cx,#256		!移动计数值=256字
+	sub	si,si		!源地址	ds:si = 0x07c0:0x0000
+	sub	di,di		!目的地址 es:di = 0x9000:0x0000
+	rep				!重复执行,直到cx = 0
+	movw			!移动1个字
+	jmpi	go,INITSEG	!间接跳转,这里INITSEG指出跳转到的段地址
+						!从下面开始,CUP执行已移动到0x9000段处的代码
+go:	mov	ax,cs			!将ds、es和ss都设置成移动后代码所在的段处(0x9000)
+	mov	ds,ax			
 	mov	es,ax
 ! put stack at 0x9ff00.
-	mov	ss,ax
-	mov	sp,#0xFF00		! arbitrary value >>512
-
+	mov	ss,ax			!由于程序中有堆栈操作(push,pop,call),因此必须设置堆栈
+	mov	sp,#0xFF00		! arbitrary value >>512 将堆栈指针sp指向0x9ff00(即0x9000:0xff00)处
+						!由于代码段移动过了，所以要重新设置堆栈段的位置。
+						!sp只要指向远大于512偏移（即地址0x90200)处
+						!都可以。因为从0x90200地址开始处还要放置setup程序，
+						!而此时setup程序大约为4个扇区，因此sp要指向大
+						!于(0x200+0x200*4+堆栈大小)处。
 ! load the setup-sectors directly after the bootblock.
 ! Note that 'es' is already set up.
+! 在bootsect程序块后紧根着加载setup模块的代码数据。
+! 注意es已经设置好了。（在移动代码时es已经指向目的段地址处0x9000)
 
 load_setup:
+!68-77行的用途是利用BI0S中断IT0x13将setup模块从磁盘第2个扇区
+!开始读到0x90200开始处，共读4个扇区。如果读出错，则复位驱动器，并
+!重试，没有退路。INT0x13的使用方法如下：
+!读扇区：
+!ah=0x02-读磁盘扇区到内存；al=需要读出的扇区数量：
+!ch=磁道（柱面）号的低8位；c1=开始扇区(0-5位)，磁道号高2位(6-7)
+!dh=磁头号：d1=驱动器号（如果是硬盘则位7要置位）：
+!es:bx→指向数据缓冲区；如果出错则CF标志置位。
 	mov	dx,#0x0000		! drive 0, head 0
 	mov	cx,#0x0002		! sector 2, track 0
 	mov	bx,#0x0200		! address = 512, in INITSEG
@@ -79,7 +130,15 @@ load_setup:
 ok_load_setup:
 
 ! Get disk drive parameters, specifically nr of sectors/track
-
+!取磁盘驱动器的参数，特别是每道的扇区数量。
+!取磁盘驱动器参数INT0x13调用格式和返回信息如下：
+!ah=0x08	d1=驱动器号（如果是硬盘则要置位7为1）。
+!返回信息：
+!如果出错则CF置位，并且ah=状态码。
+!ah=0,a1=0,		b1=驱动器类型(AT/PS2)
+!ch=最大磁道号的低8位，c1=每磁道最大扇区数（位0-5），最大磁道号高2位（位6-7）
+!dh=最大磁头数，	d1=驱动器数量，
+!es:di-→软驱磁盘参数表。
 	mov	dl,#0x00
 	mov	ax,#0x0800		! AH=8 is get drive parameters
 	int	0x13
