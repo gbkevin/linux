@@ -143,92 +143,114 @@ ok_load_setup:
 	mov	ax,#0x0800		! AH=8 is get drive parameters
 	int	0x13
 	mov	ch,#0x00
-	seg cs
-	mov	sectors,cx
+	seg cs				!表示下一条语句的操作数在cs段寄存器所指的段中
+	mov	sectors,cx		!保存每磁道扇区数
 	mov	ax,#INITSEG
-	mov	es,ax
+	mov	es,ax			!因为上面取磁盘参数中断改掉了es的值,这里重新改回来
 
-! Print some inane message
+! Print some inane message 显示一些信息('Loading system ...')回车换行共24个字符
 
-	mov	ah,#0x03		! read cursor pos
+	mov	ah,#0x03		! read cursor pos 读光标位置
 	xor	bh,bh
 	int	0x10
 	
-	mov	cx,#24
+	mov	cx,#24			!共24个字符
 	mov	bx,#0x0007		! page 0, attribute 7 (normal)
-	mov	bp,#msg1
-	mov	ax,#0x1301		! write string, move cursor
+	mov	bp,#msg1		!指向要显示的字符串
+	mov	ax,#0x1301		! write string, move cursor 写字符串并移动光标
 	int	0x10
 
 ! ok, we've written the message, now
-! we want to load the system (at 0x10000)
+! we want to load the system (at 0x10000) 现在开始将system模块加载到0x10000(64k)处
 
 	mov	ax,#SYSSEG
-	mov	es,ax		! segment of 0x010000
-	call	read_it
-	call	kill_motor
+	mov	es,ax		! segment of 0x010000 es = 存放system的段地址
+	call	read_it	!读磁盘上system模块,es为输入参数
+	call	kill_motor	!关闭驱动器马达,这样就可以知道驱动器的状态了
 
 ! After that we check which root-device to use. If the device is
 ! defined (!= 0), nothing is done and the given device is used.
 ! Otherwise, either /dev/PS0 (2,28) or /dev/at0 (2,8), depending
 ! on the number of sectors that the BIOS reports currently.
-
+!此后，我们检查要使用哪个根文件系统设备（简称根设备）。如果已经指定了设备(！=0)
+!就直接使用给定的设备。否则就需要根据BIOS报告的每磁道扇区数来
+!确定到底使用/dev/PS0(2,28)还是/dev/at0(2,8)。
+!上面一行中两个设备文件的含义：
+!在Linux中软驱的主设备号是2（参见第43行的注释），次设备号=type*4+nr,其中
+!nr为0-3分别对应软驱A、B、C或D;type是软驱的类型(2→1.2M或7→1.44M等)。
+!因为7*4+0=28，所以/dev/PS0(2,28)指的是1.44MA驱动器，其设备号是0x021c
+!同理/dev/at0(2,8)指的是1.2MA驱动器，其设备号是0x0208。
 	seg cs
-	mov	ax,root_dev
+	mov	ax,root_dev		!将根设备号
 	cmp	ax,#0
 	jne	root_defined
 	seg cs
-	mov	bx,sectors
+	mov	bx,sectors		!取上面第147行保存的每磁道扇区数,如果sectors=15则说明是1.2Mb的驱动器；
+						!如果sectors=18则说明是1.44Mb软驱。因为是可引导的驱动器,所以肯定是A驱
+
 	mov	ax,#0x0208		! /dev/ps0 - 1.2Mb
-	cmp	bx,#15
-	je	root_defined
+	cmp	bx,#15			!判断每磁道扇区数是否=15
+	je	root_defined	!如果等于则ax中就是引导驱动器的设备号
 	mov	ax,#0x021c		! /dev/PS0 - 1.44Mb
 	cmp	bx,#18
 	je	root_defined
-undef_root:
+undef_root:				!如果都不一样,则死循环(死机)
 	jmp undef_root
 root_defined:
 	seg cs
-	mov	root_dev,ax
+	mov	root_dev,ax		!将检查过的设备号保存起来
 
 ! after that (everyting loaded), we jump to
 ! the setup-routine loaded directly after
 ! the bootblock:
-
+!到此，所有程序都加载完毕,我们就跳转到被加载在bootsect后面的setup程序去
 	jmpi	0,SETUPSEG
-
+!下面是两个子程序
 ! This routine loads the system at address 0x10000, making sure
 ! no 64kB boundaries are crossed. We try to load it as fast as
 ! possible, loading whole tracks whenever we can.
 !
 ! in:	es - starting address segment (normally 0x1000)
 !
-sread:	.word 1+SETUPLEN	! sectors read of current track
-head:	.word 0			! current head
-track:	.word 0			! current track
+!该子程序将系统模块加载到内存地址0x10000处，并确定没有跨越64B的内存边界。我们试图尽快
+!地进行加载，只要可能，就每次加载整条磁道的数据。
+!输入：es-开始内存地址段值（通常是0x1000)
+sread:	.word 1+SETUPLEN	! sectors read of current track 
+							!当前磁道中已读取的扇区数,开始时已经读进1扇区的引导扇区
+							!bootsect和setup程序所占的扇区数SETUPLEN
+head:	.word 0			! current head	当前磁头号
+track:	.word 0			! current track	当前磁道号
 
 read_it:
+!测试输入的段值。从盘上读入的数据必须存放在位于内存地址64B的边界开始处，否则进入死循环。
+!清bx寄存器，用于表示当前段内存放数据的开始位置。
 	mov ax,es
 	test ax,#0x0fff
-die:	jne die			! es must be at 64kB boundary
-	xor bx,bx		! bx is starting address within segment
+die:	jne die			! es must be at 64kB boundary es值必需位于64KB地址边界
+	xor bx,bx		! bx is starting address within segment	bx为段内偏移位置
 rp_read:
+!判断是否已经读入全部数据。比较当前所读段是否就是系统数据末端所处的段(#DSEG),如果不是就
+!跳转至下面ok1read标号处继续读数据。否则退出子程序返回。
 	mov ax,es
-	cmp ax,#ENDSEG		! have we loaded all yet?
+	cmp ax,#ENDSEG		! have we loaded all yet? 是否已经加载了全部数据?
 	jb ok1_read
 	ret
 ok1_read:
+!计算和验证当前磁道需要读取的扇区数，放在ax寄存器中。
+!根据当前磁道还未读取的扇区数以及段内数据字节开始偏移位置，计算如果全部读取这些未读扇区，
+!读总字节数是否会超过64B段长度的限制。若会超过，则根据此次最多能读入的字节数(64B-段
+!偏移位置),反算出此次需要读取的扇区数
 	seg cs
-	mov ax,sectors
-	sub ax,sread
-	mov cx,ax
-	shl cx,#9
-	add cx,bx
-	jnc ok2_read
+	mov ax,sectors		!取每磁道扇区数
+	sub ax,sread		!减去当前磁道已读扇区数
+	mov cx,ax			!cx = ax = 当前磁道未读扇区数
+	shl cx,#9			!cx = cx * 512字节
+	add cx,bx			!bx = cx + 段内当前偏移值(bx) = 此次读操作后,段内共读入的字节数
+	jnc ok2_read		!若没有超过64KB字节,则跳转至ok2_read处执行
 	je ok2_read
-	xor ax,ax
-	sub ax,bx
-	shr ax,#9
+	xor ax,ax			!若加上此次将读磁道上所有未读扇区时会超过64KB,则计算
+	sub ax,bx			!此时最多读入的字节数(64KB - 段内偏移位置),再转换
+	shr ax,#9			!成需要读取的扇区数
 ok2_read:
 	call read_track
 	mov cx,ax
