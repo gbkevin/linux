@@ -252,51 +252,63 @@ ok1_read:
 	sub ax,bx			!此时最多读入的字节数(64KB - 段内偏移位置),再转换
 	shr ax,#9			!成需要读取的扇区数
 ok2_read:
-	call read_track
-	mov cx,ax
-	add ax,sread
+!读当前磁道上指定开始扇区(cl)和需读扇区数(al)的数据到es:bx开始处。然后统计当前磁道
+!上已经读取的扇区数并与磁道最大扇区数sectors作比较。如果小于sectors说明当前磁道上的还
+!有扇区未读。于是跳转到ok3read处继续操作。
+	call read_track		!读当前磁道上指定开始扇区数和需读扇区数的数据
+	mov cx,ax			!cx = 该次操作已读取的扇区数
+	add ax,sread		!加上当前磁道上已经读取的扇区数
 	seg cs
-	cmp ax,sectors
+	cmp ax,sectors		!如果当前磁道上还有扇区未读,则跳转到ok3_read
 	jne ok3_read
+!若该磁道的当前磁头面所有扇区已经读取,则读该磁道的下一磁头面(1号磁头)上的数据。如果已经完成,则去读下一磁道
 	mov ax,#1
-	sub ax,head
-	jne ok4_read
-	inc track
+	sub ax,head			!判单当前磁头号
+	jne ok4_read		!如果是0磁头,则再去读1磁头面上的扇区数据
+	inc track			!否则去读下一磁道
 ok4_read:
-	mov head,ax
-	xor ax,ax
+	mov head,ax			!保存当前磁头号
+	xor ax,ax			!清当前磁道已读扇区数
 ok3_read:
-	mov sread,ax
-	shl cx,#9
-	add bx,cx
+!如果当前磁道上的还有未读扇区，则首先保存当前磁道已读扇区数，然后调整存放数据处的开始
+!位置。若小于64KB边界值，则跳转到rp read(231行)处，继续读数据。
+	mov sread,ax		!保存当前磁道已读扇区数
+	shl cx,#9			!上次已读扇区数*512字节
+	add bx,cx			!调整当前段内数据开始位置
 	jnc rp_read
+!否则说明已经读取64KB数据。此时调整当前段,为读下一段数据做准备
 	mov ax,es
-	add ax,#0x1000
+	add ax,#0x1000		!将段基址调整为指向下一个64KB内存开始处
 	mov es,ax
-	xor bx,bx
-	jmp rp_read
+	xor bx,bx			!清除当前段内数据开始位置
+	jmp rp_read			!跳转至rp_read(231行)处,继续读数据
 
+!read_track子程序。
+!读当前磁道上指定开始扇区和需读扇区数的数据到es:bx开始处。参见第110行下对BIOS磁盘读中断
+!int0xl3,ah=2的说明。
+!al-需读扇区数；es:bx-缓冲区开始位置。
 read_track:
 	push ax
 	push bx
 	push cx
 	push dx
-	mov dx,track
-	mov cx,sread
-	inc cx
-	mov ch,dl
-	mov dx,head
-	mov dh,dl
-	mov dl,#0
-	and dx,#0x0100
-	mov ah,#2
+	mov dx,track		!取当前磁道号
+	mov cx,sread		!取当前磁道上已读扇区数
+	inc cx				!cl = 开始读扇区
+	mov ch,dl			!ch = 当前磁道号
+	mov dx,head			!取当前磁头号
+	mov dh,dl			!dh = 磁头号
+	mov dl,#0			!dl = 驱动器号(为0表示当前A驱动器)
+	and dx,#0x0100		!磁头号不大于1
+	mov ah,#2			!ah = 2,读磁盘扇区功能号
 	int 0x13
-	jc bad_rt
+	jc bad_rt			!若出错,则跳转至bad_rt
 	pop dx
 	pop cx
 	pop bx
 	pop ax
 	ret
+!读磁盘操作出错。则执行驱动器复位操作（磁盘中断功能号0），再跳转到read track处重试。
 bad_rt:	mov ax,#0
 	mov dx,#0
 	int 0x13
@@ -311,25 +323,37 @@ bad_rt:	mov ax,#0
 ! * that we enter the kernel in a known state, and
 ! * don't have to worry about it later.
 ! */
+!/*这个子程序用于关闭软驱的马达，这样我们进入内核后就能
+! *知道它所处的状态，以后也就无须担心它了。
+! */
+!下面第336行上的值0x3f2是软盘控制器的一个端口，被称为数字输出寄存器(D0)端口。它是
+!一个8位的寄存器，其位7--位4分别用于控制4个软驱(D-A)的启动和关闭。位3-位2用于
+!允许/禁止DMA和中断请求以及启动/复位软盘控制器FDC。位1-位0用于选择选择操作的软驱。
+!第337行上在al中设置并输出的0值，就是用于选择A驱动器，关闭FDC,禁止DMA和中断请求，
+!关闭马达。有关软驱控制卡编程的详细信息请参见kernel/blk_drv/floppy.c程序后面的说明。
 kill_motor:
 	push dx
-	mov dx,#0x3f2
-	mov al,#0
-	outb
+	mov dx,#0x3f2		!软驱控制卡的数字输出寄存器(DOR)端口,只写
+	mov al,#0			!A驱动器,关闭FDC,禁止DMA和终端请求,关闭马达
+	outb				!将al中的内容输出到dx指定的端口去
 	pop dx
 	ret
 
 sectors:
-	.word 0
+	.word 0				!存放当前启动软盘每磁道的扇区数
 
-msg1:
-	.byte 13,10
+msg1:					!调用BIOS中断显示的信息
+	.byte 13,10			!回车、换行的ASCII码
 	.ascii "Loading system ..."
-	.byte 13,10,13,10
+	.byte 13,10,13,10	!共24个ASCII码
 
+!表示下面语句从地址508(0x1FC)开始，所以root_dev在启动扇区的第508开始的2个字节中。
 .org 508
 root_dev:
-	.word ROOT_DEV
+	.word ROOT_DEV		!这里存放根文件系统所在设备号(init/main.c中会用)
+
+!下面是启动盘具有有效引导扇区的标志。仅供BIOS中的程序加载引导扇区时识别使用。它必须位于
+!引导扇区的最后两个字节中。
 boot_flag:
 	.word 0xAA55
 
