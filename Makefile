@@ -2,6 +2,8 @@
 # if you want the ram-disk device, define this to be the
 # size in blocks.
 #
+#如果你要使用RAM盘(RAMDISK)设备的话就定义块的大小。这里默认RAMDISK没有定义（注释掉了），
+#否则gCc编译时会带有选项'-DRAMDISK-=512',参见第13行。
 RAMDISK =  #-DRAMDISK=512
 
 AS86	=as86 -0 -a
